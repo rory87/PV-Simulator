@@ -1,0 +1,155 @@
+function [ACPower, Pdc] = pvOutput(P, GSP, Area)
+
+% Define the PV Module
+rMod = floor(1 + (522-1).*rand(1,1));
+ModuleParameters = pvl_sapmmoduledb(rMod,'SandiaModuleDatabase_20120925.xlsx');
+
+% Define the Inverter
+load('SandiaInverterDatabaseSAM2014.1.14.mat');
+fields=fieldnames(SNLInverterDB);
+
+for i=1:1460
+    power(i,1)=getfield(SNLInverterDB(i), fields{3});
+end
+
+powerDiff=(P-power);
+
+for i=1:size(powerDiff,1)
+    if powerDiff(i,1)<0
+        powerDiff(i,1)=inf;
+    end
+end
+
+loc = knnsearch(powerDiff,0);
+Inverter=SNLInverterDB(loc);
+
+% Define the Array Configuration
+Array.Tilt=floor(20 + (25-20).*rand(1,1));
+Array.Azimuth=floor(150 + (180-150).*rand(1,1));
+Tm=-30; %arbitrary minimum temperature, can be changed
+Array.Ms=floor(Inverter.Vdc0/(ModuleParameters.Voc0*(1+((ModuleParameters.BetaVoc*1e-2)*(Tm-25)))));
+Pmm=ModuleParameters.Vmp0*ModuleParameters.Imp0;
+Array.Mp=floor(P/(Pmm*Array.Ms));
+
+% Define Additional Array Parameters
+% Because we will be using the module temperature model from the Sandia Photovoltaic Array Performance Model
+%(SAPM), we will define the necessary parameters a and b here.
+Array.a = -3.56;
+Array.b = -0.075;
+
+
+
+%% Read in Irradiance and Weather
+load([pwd,'\Data\GSP_Weather']);
+load([pwd,'\Data\GSP_Location']);
+% load('C:\Users\ylb10119\Documents\Sharefile\Personal Folders\MATLAB New PC\Local Energy Modelling\GSP Models\GSP_Weather');
+% load('C:\Users\ylb10119\Documents\Sharefile\Personal Folders\MATLAB New PC\Local Energy Modelling\GSP Models\GSP_Location');
+
+switch Area
+    case 'SPEN'
+        GHI=(cell2mat(completeFluxSPEN(find(strcmp(completeFluxSPEN(:,1),GSP)), 2:end)))';
+        PresPa=(cell2mat(completePressureSPEN(find(strcmp(completePressureSPEN(:,1),GSP)), 2:end)))';
+        Temp=(cell2mat(completeTempSPEN(find(strcmp(completeTempSPEN(:,1),GSP)), 2:end)))';
+        Wind=(cell2mat(completeWindSPEN(find(strcmp(completeWindSPEN(:,1),GSP)), 2:end)))';
+        lat=cell2mat(GSP_SPEN(find(strcmp(GSP_SPEN(:,1),GSP)),2));
+        lon=cell2mat(GSP_SPEN(find(strcmp(GSP_SPEN(:,1),GSP)),2));
+    case 'SSE'
+        GHI=(cell2mat(completeFluxSSE(find(strcmp(completeFluxSSE(:,1),GSP)), 2:end)))';
+        PresPa=(cell2mat(completePressureSSE(find(strcmp(completePressureSSE(:,1),GSP)), 2:end)))';
+        Temp=(cell2mat(completeTempSSE(find(strcmp(completeTempSSE(:,1),GSP)), 2:end)))';
+        Wind=(cell2mat(completeWindSSE(find(strcmp(completeWindSSE(:,1),GSP)), 2:end)))';
+        lat=cell2mat(GSP_SSE(find(strcmp(GSP_SSE(:,1),GSP)),2));
+        lon=cell2mat(GSP_SSE(find(strcmp(GSP_SSE(:,1),GSP)),2));
+end
+
+%%%%%%%
+
+%%%%%%%
+
+% Define Location & Time 
+Location = pvl_makelocationstruct(lat,lon);
+t1=datetime(2015,4,1,0,0,0);
+t2=datetime(2016,3,31,23,0,0);
+t=t1:hours(1):t2;
+TimeMatlab=(datenum(t))';
+Time = pvl_maketimestruct(TimeMatlab, ones(size(TimeMatlab))*0);
+
+% Calculate Direct Normal Irradiance and Diffuse Horrizaontal from GHI
+
+[DNI, DHI]=calculateIrradiance2(GHI, Time, Location);
+
+
+% Define the Site Location
+
+
+% Calculate Sun Position
+
+[SunAz, SunEl, AppSunEl, SolarTime] = pvl_ephemeris(Time,Location);
+
+
+% Calculate Air Mass
+AMa = pvl_absoluteairmass(pvl_relativeairmass(90-AppSunEl), PresPa);
+
+% STEP 2 - Calculate Incident Radiation
+
+% Calculate Solar Angle of Incidence
+AOI = pvl_getaoi(Array.Tilt, Array.Azimuth, 90-AppSunEl, SunAz);
+
+
+% 2.2. Calculate Beam Radiation Component on Array
+Eb = 0*AOI; %Initiallize variable
+Eb(AOI<90) = DNI(AOI<90).*cosd(AOI(AOI<90)); %Only calculate when sun is in view of the plane of array
+
+% 2.3 Calculate SkyDiffuse Radiation Component on Array
+EdiffSky = pvl_isotropicsky(Array.Tilt,DHI);
+
+% 2.4 Calculate Ground Reflected Radiation Component on Array
+Albedo = 0.2;
+EdiffGround = pvl_grounddiffuse(Array.Tilt,GHI, Albedo);
+E = Eb + EdiffSky + EdiffGround; % Total incident irradiance (W/m^2)
+Ediff = EdiffSky + EdiffGround; % Total diffuse incident irradiance (W/m^2)
+
+% STEP 3 - Shading and Soiling
+SF=0.98;
+
+% STEP 4 - Calculate Cell Temperature
+E0 = 1000; %Reference irradiance (1000 W/m^2)
+celltemp = pvl_sapmcelltemp(E, E0, Array.a, Array.b, Wind, Temp, ModuleParameters.delT);
+
+% STEP 5 - Calculate Module/Array IV Performance
+F1 = max(0,polyval(ModuleParameters.a,AMa)); %Spectral loss function
+F2 = max(0,polyval(ModuleParameters.b,AOI)); % Angle of incidence loss function
+Ee = F1.*((Eb.*F2+ModuleParameters.fd.*Ediff)/E0)*SF; %Effective irradiance
+Ee(isnan(Ee))=0; % Set any NaNs to zero
+mSAPMResults = pvl_sapm(ModuleParameters, Ee, celltemp);
+aSAPMResults.Vmp = Array.Ms  *mSAPMResults.Vmp;
+aSAPMResults.Imp = Array.Mp  *mSAPMResults.Imp;
+aSAPMResults.Pmp = aSAPMResults.Vmp .* aSAPMResults.Imp;
+
+
+Vdc=(mSAPMResults.Vmp*Array.Ms);
+for i=1:size(Vdc,1)
+    if (Vdc(i,1))<0
+        Vdc(i,1)=0;
+    end
+end
+Pdc=mSAPMResults.Pmp*Array.Ms*Array.Mp;
+for i=1:size(Pdc,1)
+    if (Pdc(i,1))<0
+        Pdc(i,1)=0;
+    end
+end
+
+% STEP 8 - DC to AC Conversion
+ACPower = pvl_snlinverter(Inverter, Vdc, Pdc);
+
+figure
+tfilter = and(Time.month == 6,Time.day == 2);
+plot(Time.hour(tfilter),aSAPMResults.Pmp(tfilter),'-sr')
+hold all
+plot(Time.hour(tfilter),ACPower(tfilter),'-ob')
+legend('DC Pmp', 'AC Power')
+%xlabel('Hour of Day')
+ylabel('Power (W)')
+
+end
