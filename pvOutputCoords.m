@@ -42,7 +42,7 @@ Array.Mp=ceil(P/(Pmm*Array.Ms));
 Array.a = -3.56;
 Array.b = -0.075;
 
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
 [GHI,Wind,Temp,PresPa] = weatherCoords(latitude, longitude);
 
 Location = pvl_makelocationstruct(latitude,longitude);
@@ -51,7 +51,7 @@ t2=datetime(2016,3,31,23,0,0);
 t=t1:hours(1):t2;
 TimeMatlab=(datenum(t))';
 Time = pvl_maketimestruct(TimeMatlab, ones(size(TimeMatlab))*0);
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
 
 % Location = pvl_makelocationstruct(latitude,longitude);
 % t1=datetime(2014,1,1,0,0,0);
